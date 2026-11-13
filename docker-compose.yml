@@ -29,7 +29,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?Renseigne POSTGRES_PASSWORD dans .env}
     volumes:
       - .:/workspace
-      - ./donnees/olist:/workspace/donnees/olist:ro
+      - ./data:/workspace/data:ro
     working_dir: /workspace
     depends_on:
       postgres:
