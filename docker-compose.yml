@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: olist
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Renseigne POSTGRES_PASSWORD dans .env}
+      POSTGRES_DB: olist
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U olist -d olist"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    ports:
+      - "127.0.0.1:8888:8888"
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: olist
+      PGUSER: olist
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Renseigne POSTGRES_PASSWORD dans .env}
+    volumes:
+      - .:/workspace
+      - ./donnees/olist:/workspace/donnees/olist:ro
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - jupyter
+      - lab
+      - --ip=0.0.0.0
+      - --port=8888
+      - --no-browser
+      - --allow-root
+      - --ServerApp.root_dir=/workspace
+
+volumes:
+  postgres_data:

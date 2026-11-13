@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /workspace
+
+RUN pip install --no-cache-dir \
+    jupyterlab \
+    pandas \
+    numpy \
+    matplotlib \
+    seaborn \
+    scikit-learn \
+    joblib \
+    sqlalchemy \
+    psycopg2-binary \
+    folium \
+    plotly \
+    pytest
