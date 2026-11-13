@@ -192,3 +192,153 @@ fois. Elle ne permettra donc pas de bien séparer les clients, et il faudra ajou
   échéances à 0, produits à 0 g ou sans catégorie, catégories non traduites, villes mal écrites, doublons
   et points hors Brésil dans geolocation, avis en double, une commande sans paiement et des commandes sans
   article.
+
+## Demi-journée 1 — Étape 3 : l'audit de qualité
+
+Tout le détail est dans [notebooks/02_audit_qualite.ipynb](notebooks/02_audit_qualite.ipynb). Le principe : **on mesure,
+on ne corrige rien**. Chaque contrôle passe par une petite fonction `constat(...)` qui l'enregistre dans un
+registre ; à la fin, un seul tableau récapitule les 121 contrôles lancés, dont 71 trouvent au moins une ligne
+concernée. On garde aussi les contrôles à 0 : savoir qu'il n'y a ni doublon de `order_id` ni article orphelin, c'est
+aussi une information.
+
+Pour les valeurs aberrantes, on utilise la règle de Tukey avec un seuil large (Q1 − 3·IQR, Q3 + 3·IQR) : on cherche
+des valeurs *extrêmes*, pas simplement grandes. Mais une valeur extrême n'est pas forcément fausse (un frigo pèse
+plus de 6,7 kg), d'où des contrôles « métier » à côté : poids nul, densité impossible, échéances à 0…
+
+### Vue d'ensemble
+
+Nombre de contrôles ayant trouvé un problème, par fichier et par famille :
+
+| Fichier | Manquants | Doublons | Temporel | Entre fichiers | Aberrants |
+|---|---:|---:|---:|---:|---:|
+| orders | 6 | 0 | 6 | 4 | 2 |
+| order_items | 0 | 0 | 1 | 1 | 4 |
+| payments | 0 | 1 | — | 2 | 4 |
+| reviews | 2 | 3 | 2 | 1 | 1 |
+| products | 8 | 0 | — | 1 | 6 |
+| customers | 0 | 2 | 1 | 1 | 1 |
+| sellers | 0 | 0 | — | 2 | 2 |
+| geolocation | 0 | 2 | — | 2 | 3 |
+| translation | 0 | 0 | — | 0 | 0 |
+
+« — » : la table n'a pas de date, la famille ne s'applique pas. La table `client_geo` (PostgreSQL) a aussi été
+contrôlée : 99 441 lignes, aucune valeur manquante, aucun doublon, chaque `customer_id` retrouvé dans les deux
+sens et toutes les positions au Brésil. Rien à signaler.
+
+### orders
+
+- **Manquants** : 160 dates de validation, 1 783 dates de remise au transporteur et 2 965 dates de livraison
+  manquent. En croisant avec le statut, presque tout est logique (une commande annulée ou en cours n'a pas de date de
+  livraison). Restent anormales les commandes `delivered` sans date de validation (14), sans remise transporteur (2)
+  ou sans date de livraison (8).
+- **Doublons** : aucun. `order_id` et `customer_id` sont uniques.
+- **Temporel** : c'est la table la plus touchée.
+  - 1 359 commandes sont remises au transporteur *avant* d'être validées (médiane : 17 h d'avance, jusqu'à 171 jours) ;
+  - 166 sont remises au transporteur avant même l'achat ;
+  - 23 sont livrées avant la remise au transporteur ;
+  - 6 ont une date de livraison sans être `delivered` ;
+  - 1 723 sont toujours « en cours » (`shipped`, `invoiced`, `processing`…) plus de 60 jours avant la fin de
+    l'extraction : elles ne seront jamais livrées, ce sont en pratique des commandes perdues ou abandonnées ;
+  - 349 commandes tombent dans des mois quasi vides (2016-09, 2016-10, 2016-12, 2018-09, 2018-10).
+
+  Aucune commande n'est validée ou livrée avant l'achat, ni avec une date estimée antérieure à l'achat.
+- **Entre fichiers** : 775 commandes sans article, 1 sans paiement, 768 sans avis. Parmi les commandes sans article,
+  1 est pourtant `shipped` : c'est la seule vraiment incohérente, les autres sont annulées ou indisponibles.
+- **Aberrants** : 306 livraisons prennent plus de 60 jours (jusqu'à 210) et 81 validations arrivent plus d'une semaine
+  après l'achat (jusqu'à 188 jours).
+
+### order_items
+
+- **Manquants / doublons** : aucun, et la numérotation `order_item_id` va bien de 1 à n sans trou.
+- **Temporel** : 12 articles ont une date limite d'expédition plus de 60 jours après l'achat (jusqu'à presque 3 ans).
+- **Entre fichiers** : toutes les clés se retrouvent. En revanche, 549 articles appartiennent à des commandes
+  `canceled` ou `unavailable` : ils ne doivent pas compter dans le chiffre d'affaires.
+- **Aberrants** : aucun prix nul ou négatif. 4 074 prix dépassent 420 R$ (max 6 735 R$) et 5 538 frais de port dépassent
+  45 R$ (max 410 R$) : ce sont des produits chers ou lourds, pas des erreurs. Plus parlant : 383 articles ont des
+  frais de port à 0 (livraison offerte ?) et 4 124 coûtent moins cher que leur port.
+
+### payments
+
+- **Manquants / doublons** : aucun sur la clé (`order_id`, `payment_sequential`). Mais 80 commandes ont une
+  numérotation avec des trous (souvent un seul paiement numéroté 2, sans paiement 1).
+- **Entre fichiers** : 249 commandes ont un total payé qui diffère de plus de 1 R$ du prix + port (de −52 à
+  +183 R$) ; 830 paiements concernent des commandes sans article.
+- **Aberrants** : 3 types `not_defined`, 2 paiements à 0 échéance, 9 paiements à 0 R$. 4 046 paiements dépassent
+  517 R$ (max 13 664 R$), cohérent avec les gros paniers. Aucun paiement en plusieurs fois hors carte de crédit :
+  les échéances sont donc fiables.
+
+### reviews
+
+- **Manquants** : 88 % sans titre, 59 % sans message, ce qui est normal (champs facultatifs).
+- **Doublons** : aucune ligne en double, et le couple (`review_id`, `order_id`) est bien unique. Mais 814 `review_id`
+  sont partagés par plusieurs commandes, et 551 commandes ont plusieurs avis, dont **202 avec des notes
+  différentes** : il faudra choisir laquelle garder (la plus récente, ou la moyenne).
+- **Temporel** : 64 avis sont créés avant le jour de l'achat (l'étape 2 en comptait 74 en comparant à l'heure près,
+  alors que la date de création est toujours à minuit) ; 5 127 avis sont créés avant la livraison effective, ce qui
+  s'explique sans doute par l'envoi du questionnaire à la date *estimée*. Aucune réponse n'est antérieure au
+  questionnaire.
+- **Entre fichiers** : 1 206 avis portent sur des commandes annulées ou indisponibles (note moyenne 1,7 contre 4,1 ailleurs :
+  l'avis porte alors sur l'annulation et non sur le produit).
+- **Aberrants** : toutes les notes sont entre 1 et 5 ; 682 réponses arrivent plus de 30 jours après le
+  questionnaire (jusqu'à 519 jours).
+
+### products
+
+- **Manquants** : les 610 produits sans catégorie sont aussi sans longueur de nom, de description ni nombre de
+  photos : ce sont des fiches incomplètes. Les dimensions manquent pour 2 produits (dont 1 qui n'a aucune
+  information du tout).
+- **Doublons** : aucun.
+- **Entre fichiers** : 13 produits ont une catégorie sans traduction (`pc_gamer`,
+  `portateis_cozinha_e_preparadores_de_alimentos`). Tous les produits ont été vendus au moins une fois.
+- **Aberrants** : 4 produits pèsent 0 g, et 18 ont une densité supérieure à 10 g/cm³ (plus lourds que du fer à volume
+  égal, jusqu'à 85 g/cm³) : poids ou dimensions faux. Les 3 073 poids au-dessus de 6,7 kg et les dimensions qui
+  dépassent un mètre sont plausibles (meubles, électroménager).
+
+### customers
+
+- **Manquants / doublons** : aucun. `customer_unique_id` se répète, c'est voulu (clients fidèles), mais 250 personnes
+  ont plusieurs codes postaux et 39 apparaissent dans plusieurs États (déménagement ou livraison à une autre adresse).
+- **Temporel** : 292 commandes sont passées par la même personne à la même seconde qu'une autre : vraisemblablement un
+  panier découpé en plusieurs commandes. Pour la fréquence du RFM, il faudra décider si cela compte pour un ou
+  plusieurs achats.
+- **Entre fichiers** : chaque `customer_id` a sa commande et sa position dans `client_geo` ; 278 codes postaux sont
+  absents de geolocation (sans conséquence puisqu'on utilise `client_geo`). L'État déclaré correspond toujours à
+  celui du code postal.
+- **Aberrants** : codes postaux tous à 5 chiffres, États tous valides, une seule ville mal saisie.
+
+### sellers
+
+- **Manquants / doublons** : aucun.
+- **Entre fichiers** : tous les vendeurs ont vendu. 7 codes postaux sont absents de geolocation (vendeurs qu'on ne
+  pourra pas placer sur une carte) et 35 vendeurs déclarent un État différent de celui de leur code postal.
+- **Aberrants** : 26 villes mal saisies (`sao paulo - sp`, `sbc/sp`, `04482255`,
+  `novo hamburgo, rio grande do sul, brasil`…). Une fois normalisées, 17 villes s'avèrent écrites de plusieurs façons
+  (`sao paulo` sous 4 formes).
+
+### geolocation
+
+- **Manquants** : aucun.
+- **Doublons** : 261 831 lignes entièrement dupliquées (26 %), et 94,5 % des préfixes ont plusieurs points (jusqu'à
+  1 146). La table n'a pas de clé.
+- **Entre fichiers** : 8 préfixes sont rattachés à plusieurs États ; 4 099 préfixes (22 %) ne servent à aucun client
+  ni vendeur.
+- **Aberrants** : 42 points hors du Brésil, 1 186 points à plus de 50 km de la médiane de leur préfixe (jusqu'à
+  9 534 km), et 45 % des préfixes ont plusieurs orthographes de ville (`embu-guacu` / `embu-guaçu` / `embu guaçu`).
+
+### translation
+
+Rien à signaler : pas de manquant, pas de doublon, toutes les catégories traduites sont utilisées. Le seul problème
+est du côté de products (2 catégories absentes du dictionnaire).
+
+### Ce qu'on retient pour le nettoyage
+
+Les problèmes ne se valent pas. On les classe en trois groupes pour l'étape 4 :
+
+1. **Erreurs à corriger ou rejeter** : dates dans le désordre (166 + 1 359 + 23), statuts contradictoires avec les
+   dates (8 + 6 + 1), échéances à 0, type `not_defined`, poids à 0 g ou densité impossible, points hors Brésil,
+   villes mal saisies.
+2. **Faits métier à filtrer selon l'usage** : commandes annulées / indisponibles et leurs articles, paiements et avis ;
+   commandes bloquées « en cours » ; mois quasi vides au début et à la fin.
+3. **Particularités normales à gérer sans rejeter** : commentaires vides, avis multiples par commande, écarts payé /
+   facturé, frais de port nuls, produits lourds ou chers, doublons de geolocation (résolus par l'agrégation par
+   préfixe de l'étape 2).
